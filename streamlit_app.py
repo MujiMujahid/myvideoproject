@@ -37,7 +37,7 @@ def extract_screenshots_at_timestamps(video_path, timestamps):
         ret, frame = cap.read()
         
         if ret:
-            screenshot_filename = f"screenshot_{minutes}m_{seconds}s.jpg"
+            screenshot_filename = f"{minutes}-{seconds:02d}.jpg"
             screenshot_path = os.path.join(temp_dir, screenshot_filename)
             
             cv2.imwrite(screenshot_path, frame)
@@ -64,7 +64,7 @@ def create_zip_file(screenshot_paths, temp_dir):
     
     with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zip_file:
         for screenshot_path in screenshot_paths:
-            # arcname = os.path.basename(screenshot_path)
+            arcname = os.path.basename(screenshot_path)
             zip_file.write(screenshot_path, arcname)
     
     return zip_path

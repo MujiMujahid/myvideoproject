@@ -5,10 +5,12 @@ import zipfile
 import tempfile
 from PIL import Image
 import io
+import pandas as pd
+import numpy as np
 
-def extract_screenshots(video_path, interval_seconds):
+def extract_screenshots_at_timestamps(video_path, timestamps):
     """
-    Video se specific interval par screenshots extract karta hai
+    Video se user-defined timestamps par screenshots extract karta hai
     """
     # Video capture object banate hain
     cap = cv2.VideoCapture(video_path)
@@ -27,44 +29,48 @@ def extract_screenshots(video_path, interval_seconds):
     temp_dir = tempfile.mkdtemp()
     screenshot_paths = []
     
-    # Interval frames calculate karte hain
-    interval_frames = interval_seconds * fps
-    
-    frame_count = 0
-    screenshot_count = 0
-    
     # Progress bar
     progress_bar = st.progress(0)
     status_text = st.empty()
     
-    while True:
+    # Sort timestamps to process in order
+    timestamps.sort()
+    
+    for i, (minutes, seconds) in enumerate(timestamps):
+        timestamp_seconds = minutes * 60 + seconds
+        
+        # Check if timestamp is valid
+        if timestamp_seconds > duration:
+            st.warning(f"⚠️ Timestamp {minutes}m {seconds}s exceeds video duration, skipping.")
+            continue
+        
+        # Set video position to timestamp
+        frame_position = int(timestamp_seconds * fps)
+        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_position)
+        
+        # Read frame
         ret, frame = cap.read()
         
-        if not ret:
-            break
-            
-        # Har interval par screenshot lete hain
-        if frame_count % interval_frames == 0:
+        if ret:
             # Screenshot filename
-            screenshot_filename = f"screenshot_{screenshot_count:04d}_at_{frame_count//fps}s.jpg"
+            screenshot_filename = f"screenshot_{minutes}m_{seconds}s.jpg"
             screenshot_path = os.path.join(temp_dir, screenshot_filename)
             
             # Frame ko save karte hain
             cv2.imwrite(screenshot_path, frame)
             screenshot_paths.append(screenshot_path)
             
-            screenshot_count += 1
-            status_text.text(f"📸 Screenshot {screenshot_count} saved at {frame_count//fps}s")
-        
-        frame_count += 1
-        
-        # Progress update karte hain
-        progress = frame_count / total_frames
-        progress_bar.progress(progress)
+            status_text.text(f"📸 Screenshot {i+1} saved at {minutes}m {seconds}s")
+            
+            # Progress update karte hain
+            progress = (i + 1) / len(timestamps)
+            progress_bar.progress(progress)
+        else:
+            st.warning(f"⚠️ Could not capture frame at {minutes}m {seconds}s")
     
     cap.release()
     
-    st.success(f"✅ Total {screenshot_count} screenshots extracted!")
+    st.success(f"✅ Total {len(screenshot_paths)} screenshots extracted!")
     
     return screenshot_paths, temp_dir
 
@@ -92,14 +98,14 @@ def main():
     
     # Title aur description
     st.title("📹 Video Screenshot Extractor")
-    st.markdown("**Video upload kar ke specific intervals par screenshots extract krain!**")
+    st.markdown("**Video upload kar ke custom timestamps par screenshots extract krain!**")
     
     # Sidebar mein instructions
     with st.sidebar:
         st.markdown("## 📋 Instructions")
         st.markdown("""
         1. **Video File Upload** krain
-        2. **Interval (seconds)** set krain  
+        2. **Timestamps** add krain (minute aur second)  
         3. **Process** button dabain
         4. **Download** zip file
         """)
@@ -118,79 +124,121 @@ def main():
             type=['mp4', 'avi', 'mov', 'mkv', 'wmv', 'flv', 'webm'],
             help="Supported formats: MP4, AVI, MOV, MKV, WMV, FLV, WebM"
         )
+    
+    # Timestamp input section
+    if uploaded_file:
+        st.markdown("### ⏱️ Screenshot Timestamps")
+        st.markdown("Video mein jin timestamps par screenshot lena hai, wo add krain:")
         
-        # Interval input
-        interval = st.number_input(
-            "⏱️ Screenshot Interval (Seconds)",
-            min_value=1,
-            max_value=60,
-            value=5,
-            help="Har kitne seconds ke baad screenshot lena hai"
+        # Initialize timestamp data in session state if not already present
+        if 'timestamps' not in st.session_state:
+            st.session_state.timestamps = pd.DataFrame({
+                'Minute': [1, 2, 3],
+                'Second': [0, 30, 0]
+            })
+        
+        # Edit timestamps using data editor
+        edited_df = st.data_editor(
+            st.session_state.timestamps,
+            num_rows="dynamic",
+            column_config={
+                "Minute": st.column_config.NumberColumn(
+                    "Minute",
+                    help="Minutes (0-999)",
+                    min_value=0,
+                    max_value=999,
+                    step=1,
+                    format="%d"
+                ),
+                "Second": st.column_config.NumberColumn(
+                    "Second",
+                    help="Seconds (0-59)",
+                    min_value=0,
+                    max_value=59,
+                    step=1,
+                    format="%d"
+                )
+            },
+            use_container_width=True,
+            hide_index=True
         )
         
-    with col2:
-        if uploaded_file:
+        # Update session state
+        st.session_state.timestamps = edited_df
+        
+        # Extract timestamps as list of tuples
+        timestamps = [(int(row['Minute']), int(row['Second'])) for _, row in edited_df.iterrows()]
+        
+        with col2:
             st.markdown("### 📊 File Info")
             st.write(f"**File Name:** {uploaded_file.name}")
             st.write(f"**File Size:** {uploaded_file.size / (1024*1024):.2f} MB")
-            st.write(f"**Screenshot Interval:** {interval} seconds")
+            st.write(f"**Total Timestamps:** {len(timestamps)}")
     
-    # Processing section
-    if uploaded_file is not None:
+        # Processing section
         if st.button("🚀 Process Video", type="primary", use_container_width=True):
-            with st.spinner("🔄 Video processing... Please wait..."):
-                try:
-                    # Temporary file mein video save karte hain
-                    with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as temp_video:
-                        temp_video.write(uploaded_file.read())
-                        temp_video_path = temp_video.name
-                    
-                    # Screenshots extract karte hain
-                    screenshot_paths, temp_dir = extract_screenshots(temp_video_path, interval)
-                    
-                    if screenshot_paths:
-                        # Zip file banate hain
-                        zip_path = create_zip_file(screenshot_paths, temp_dir)
+            if len(timestamps) == 0:
+                st.error("❌ Please add at least one timestamp.")
+            else:
+                with st.spinner("🔄 Video processing... Please wait..."):
+                    try:
+                        # Temporary file mein video save karte hain
+                        with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as temp_video:
+                            temp_video.write(uploaded_file.read())
+                            temp_video_path = temp_video.name
                         
-                        # Download button
-                        with open(zip_path, 'rb') as zip_file:
-                            st.download_button(
-                                label="📥 Download Screenshots ZIP",
-                                data=zip_file.read(),
-                                file_name=f"screenshots_{uploaded_file.name.split('.')[0]}.zip",
-                                mime="application/zip",
-                                type="primary",
-                                use_container_width=True
-                            )
+                        # Screenshots extract karte hain
+                        screenshot_paths, temp_dir = extract_screenshots_at_timestamps(temp_video_path, timestamps)
                         
-                        # Sample screenshots preview
-                        st.markdown("### 🖼️ Sample Screenshots Preview")
+                        if screenshot_paths:
+                            # Zip file banate hain
+                            zip_path = create_zip_file(screenshot_paths, temp_dir)
+                            
+                            # Download button
+                            with open(zip_path, 'rb') as zip_file:
+                                st.download_button(
+                                    label="📥 Download Screenshots ZIP",
+                                    data=zip_file.read(),
+                                    file_name=f"screenshots_{uploaded_file.name.split('.')[0]}.zip",
+                                    mime="application/zip",
+                                    type="primary",
+                                    use_container_width=True
+                                )
+                            
+                            # Sample screenshots preview
+                            st.markdown("### 🖼️ Screenshots Preview")
+                            
+                            # Preview all screenshots in grid
+                            preview_count = min(6, len(screenshot_paths))
+                            num_cols = 3
+                            num_rows = (preview_count + num_cols - 1) // num_cols
+                            
+                            for row in range(num_rows):
+                                cols = st.columns(num_cols)
+                                for col in range(num_cols):
+                                    idx = row * num_cols + col
+                                    if idx < preview_count:
+                                        with cols[col]:
+                                            img = Image.open(screenshot_paths[idx])
+                                            filename = os.path.basename(screenshot_paths[idx])
+                                            st.image(img, caption=filename, use_column_width=True)
                         
-                        # Pehle 4 screenshots ka preview dikhate hain
-                        preview_count = min(4, len(screenshot_paths))
-                        cols = st.columns(preview_count)
+                        else:
+                            st.error("❌ No screenshots could be extracted from the video.")
                         
-                        for i in range(preview_count):
-                            with cols[i]:
-                                img = Image.open(screenshot_paths[i])
-                                st.image(img, caption=f"Screenshot {i+1}", use_column_width=True)
-                    
-                    else:
-                        st.error("❌ No screenshots could be extracted from the video.")
-                    
-                    # Cleanup temp files
-                    os.unlink(temp_video_path)
-                    
-                except Exception as e:
-                    st.error(f"❌ Error processing video: {str(e)}")
-                    st.error("Please make sure the video file is valid and not corrupted.")
+                        # Cleanup temp files
+                        os.unlink(temp_video_path)
+                        
+                    except Exception as e:
+                        st.error(f"❌ Error processing video: {str(e)}")
+                        st.error("Please make sure the video file is valid and not corrupted.")
     
     # Footer
     st.markdown("---")
     st.markdown("**💡 Tips:**")
-    st.markdown("- Chhote intervals (1-2 seconds) zyada screenshots denge")
-    st.markdown("- Bade intervals (10+ seconds) kam screenshots denge") 
-    st.markdown("- Video quality aur size ke according processing time vary hoga")
+    st.markdown("- Click '+' button to add more timestamps")
+    st.markdown("- Timestamps ko precise rakhne ke liye seconds 0-59 tak hi rakhein") 
+    st.markdown("- Agar timestamp video duration se zyada hai to wo skip ho jaye ga")
 
 if __name__ == "__main__":
     main()
